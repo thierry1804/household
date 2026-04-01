@@ -1,0 +1,625 @@
+import { useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { format, subDays, subMonths } from 'date-fns'
+import { Header } from '../components/layout/Header'
+import { DepenseAddOffcanvas } from '../components/depenses/DepenseAddOffcanvas'
+import { DepenseList } from '../components/depenses/DepenseList'
+import type { DepenseEditPayload } from '../components/depenses/DepenseForm'
+import { Button } from '../components/ui/Button'
+import { Input, Select } from '../components/ui/Input'
+import { useBudgetItems } from '../hooks/useBudgetItems'
+import { useCategories } from '../hooks/useCategories'
+import { useDepenseMutations } from '../hooks/useDepenses'
+import { fetchDepensesAllFiltered } from '../services/depenses.service'
+import {
+  depensesToCsv,
+  parseDepensesCsvWithMeta,
+  type SlashDateOrder,
+} from '../utils/csv'
+import { getApiErrorMessage, getViolations } from '../services/api'
+import { slugifyReferentialCode } from '../utils/slug'
+import type { Categorie } from '../types'
+import { Download, Plus, Upload, X } from 'lucide-react'
+import { cn } from '../utils/cn'
+import { formatYmdFrSlash } from '../utils/formatters'
+
+function resolveCategorieCode(
+  raw: string,
+  categories: Categorie[],
+): string | null {
+  const t = raw.trim()
+  if (!t) return null
+  const lower = t.toLowerCase()
+  const byCode = categories.find((c) => c.code.toLowerCase() === lower)
+  if (byCode) return byCode.code
+  const byLib = categories.find((c) => c.libelle.toLowerCase() === lower)
+  if (byLib) return byLib.code
+  const slug = slugifyReferentialCode(t)
+  const bySlug = categories.find((c) => c.code.toLowerCase() === slug)
+  return bySlug?.code ?? null
+}
+
+/** Quand le CSV n’a pas de catégorie / poste ou des cellules vides. */
+function defaultCategorieCode(categories: Categorie[]): string | null {
+  if (categories.length === 0) return null
+  const divers = categories.find((c) => c.code.toLowerCase() === 'divers')
+  if (divers) return divers.code
+  const sorted = [...categories].sort(
+    (a, b) => a.ordre - b.ordre || a.code.localeCompare(b.code),
+  )
+  return sorted[0]?.code ?? null
+}
+
+export function DepensesPage() {
+  const { data: categories = [] } = useCategories()
+  const { data: budgetItems = [] } = useBudgetItems()
+  const { create, update, remove } = useDepenseMutations()
+  const queryClient = useQueryClient()
+
+  /** Par défaut : 12 derniers mois (les imports CSV sont souvent sur une autre période que le mois en cours). */
+  const defaultAfter = useMemo(
+    () => format(subMonths(new Date(), 12), 'yyyy-MM-dd'),
+    [],
+  )
+  const defaultBefore = useMemo(() => format(new Date(), 'yyyy-MM-dd'), [])
+
+  const [after, setAfter] = useState(defaultAfter)
+  const [before, setBefore] = useState(defaultBefore)
+  const [categorieCode, setCategorieCode] = useState('')
+  /** 04/01/2026 = 4 jan. (FR) ou 1er avril (Excel US) — mémorisé pour les imports CSV. */
+  const [csvSlashDateOrder, setCsvSlashDateOrder] = useState<SlashDateOrder>(
+    () => {
+      try {
+        const v = localStorage.getItem('depensesCsvSlashDateOrder')
+        if (v === 'MDY' || v === 'DMY') return v
+      } catch {
+        /* ignore */
+      }
+      return 'DMY'
+    },
+  )
+  const [csvImportProgress, setCsvImportProgress] = useState<{
+    current: number
+    total: number
+    nom: string
+  } | null>(null)
+  const depenseCsvInputRef = useRef<HTMLInputElement>(null)
+  /** Messages d’import (les `alert()` sont souvent bloqués dans les navigateurs embarqués). */
+  const [csvImportFeedback, setCsvImportFeedback] = useState<{
+    variant: 'error' | 'success' | 'warning'
+    summary: string
+    details?: string[]
+  } | null>(null)
+  const [addDepenseOpen, setAddDepenseOpen] = useState(false)
+  const [addDepenseNonce, setAddDepenseNonce] = useState(0)
+
+  function dismissCsvFeedback() {
+    setCsvImportFeedback(null)
+  }
+
+  function openAddDepense() {
+    setAddDepenseNonce((n) => n + 1)
+    setAddDepenseOpen(true)
+  }
+
+  function reportCsvParseError(message: string) {
+    console.error('[Import CSV]', message)
+    setCsvImportFeedback({
+      variant: 'error',
+      summary: message,
+    })
+  }
+
+  function reportCsvResult(
+    variant: 'success' | 'warning' | 'error',
+    summary: string,
+    details?: string[],
+  ) {
+    const detailStr = details?.length ? details : ''
+    if (variant === 'error') {
+      console.error('[Import CSV]', summary, detailStr)
+    } else if (variant === 'warning') {
+      console.warn('[Import CSV]', summary, detailStr)
+    } else {
+      console.info('[Import CSV]', summary, detailStr)
+    }
+    setCsvImportFeedback({ variant, summary, details })
+  }
+
+  /** Si Du > Au, l’API renvoie souvent vide — on interprète comme min/max. */
+  const { queryAfter, queryBefore, datesInverted } = useMemo(() => {
+    if (after <= before) {
+      return { queryAfter: after, queryBefore: before, datesInverted: false }
+    }
+    return { queryAfter: before, queryBefore: after, datesInverted: true }
+  }, [after, before])
+
+  const { data: items = [], isLoading, isError, error } = useQuery({
+    queryKey: [
+      'depenses',
+      'filtered',
+      queryAfter,
+      queryBefore,
+      categorieCode,
+    ],
+    queryFn: () =>
+      fetchDepensesAllFiltered({
+        'date[after]': queryAfter,
+        'date[before]': queryBefore,
+        ...(categorieCode ? { categorieCode } : {}),
+        'order[date]': 'desc',
+      }),
+  })
+  const busy =
+    create.isPending ||
+    update.isPending ||
+    remove.isPending ||
+    csvImportProgress != null
+
+  function handleExport() {
+    const blob = new Blob(
+      [
+        depensesToCsv(
+          items.map((d) => ({
+            date: d.date,
+            produit: d.produit,
+            categorieCode: d.categorieCode,
+            posteBudgetaire: d.budgetItem?.nom ?? '',
+            quantite: d.quantite,
+            unite: d.unite ?? '',
+            prixUnitaire: d.prixUnitaire,
+            montant: d.montant,
+          })),
+        ),
+      ],
+      { type: 'text/csv;charset=utf-8' },
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `depenses-${after}-${before}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleDepensesCsvChange(
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+
+    dismissCsvFeedback()
+    const text = await file.text()
+    let parsed: ReturnType<typeof parseDepensesCsvWithMeta>['rows']
+    let dataLineCount = 0
+    let delimLabel = 'virgule'
+    try {
+      const meta = parseDepensesCsvWithMeta(text, {
+        slashDateOrder: csvSlashDateOrder,
+      })
+      parsed = meta.rows
+      dataLineCount = meta.dataLineCount
+      delimLabel =
+        meta.delimiter === ';'
+          ? 'point-virgule (souvent Excel)'
+          : meta.delimiter === '\t'
+            ? 'tabulation'
+            : 'virgule'
+    } catch (err) {
+      reportCsvParseError(
+        err instanceof Error
+          ? err.message
+          : 'Fichier CSV invalide ou incomplet.',
+      )
+      return
+    }
+    if (parsed.length === 0) {
+      reportCsvResult(
+        'warning',
+        dataLineCount > 0
+          ? `Aucune ligne valide sur ${dataLineCount} ligne(s) de données. Vérifiez le format des dates (JJ/MM/AAAA…), des quantités (colonne QT, QUANTITE…) et des montants. Séparateur détecté : ${delimLabel}.`
+          : 'Aucune ligne importable dans ce fichier (fichier vide ou uniquement des en-têtes).',
+      )
+      return
+    }
+
+    const total = parsed.length
+    function bumpRow(index: number, nom: string) {
+      flushSync(() => {
+        setCsvImportProgress({ current: index + 1, total, nom })
+      })
+    }
+
+    flushSync(() => {
+      setCsvImportProgress({ current: 0, total, nom: '' })
+    })
+
+    let imported = 0
+    let failed = 0
+    const errorLines: string[] = []
+    /** Dates des lignes réellement créées (pour élargir Du / Au si besoin). */
+    const importedDates: string[] = []
+    try {
+      for (let i = 0; i < parsed.length; i++) {
+        const row = parsed[i]
+        let categorieResolved: string | null = null
+        let budgetItemId: number | null = null
+        if (row.posteBudgetaireRaw) {
+          const key = row.posteBudgetaireRaw.trim().toLowerCase()
+          const item = budgetItems.find(
+            (b) => b.nom.trim().toLowerCase() === key,
+          )
+          if (item) {
+            budgetItemId = item.id
+            categorieResolved = item.categorie
+          }
+        }
+        if (!categorieResolved && row.categorieCodeRaw) {
+          categorieResolved = resolveCategorieCode(
+            row.categorieCodeRaw,
+            categories,
+          )
+        }
+        if (!categorieResolved) {
+          categorieResolved = defaultCategorieCode(categories)
+        }
+        if (!categorieResolved) {
+          failed++
+          errorLines.push(
+            `${row.produit} : aucune catégorie par défaut possible (référentiel vide).`,
+          )
+          bumpRow(i, row.produit)
+          continue
+        }
+        try {
+          await create.mutateAsync({
+            date: row.dateIso,
+            produit: row.produit,
+            budgetItemId,
+            categorieCode: categorieResolved,
+            quantite: row.quantite,
+            unite: row.unite || null,
+            prixUnitaire: row.prixUnitaire,
+            note: null,
+          })
+          imported++
+          importedDates.push(row.dateIso)
+        } catch (err) {
+          failed++
+          const v = getViolations(err)
+          const msg =
+            v.length > 0
+              ? v.map((x) => `${x.field}: ${x.message}`).join(' ; ')
+              : getApiErrorMessage(err)
+          errorLines.push(`${row.produit} : ${msg}`)
+        }
+        bumpRow(i, row.produit)
+      }
+      let summary =
+        `${imported} ligne(s) importée(s).` +
+        (failed ? ` ${failed} ligne(s) ignorée(s) ou en échec.` : '')
+      if (importedDates.length > 0) {
+        const sorted = [...importedDates].sort()
+        const minD = sorted[0]
+        const maxD = sorted[sorted.length - 1]
+        const widen = minD < after || maxD > before
+        if (widen) {
+          flushSync(() => {
+            setAfter((a) => (minD < a ? minD : a))
+            setBefore((b) => (maxD > b ? maxD : b))
+          })
+          summary +=
+            ' La plage « Du / Au » a été élargie pour inclure les dates du fichier.'
+        }
+      }
+      await queryClient.invalidateQueries({ queryKey: ['depenses'] })
+      reportCsvResult(
+        failed > 0 ? (imported > 0 ? 'warning' : 'error') : 'success',
+        summary,
+        errorLines.length > 0 ? errorLines.slice(0, 20) : undefined,
+      )
+    } catch (err) {
+      reportCsvParseError(
+        err instanceof Error
+          ? err.message
+          : 'Erreur pendant l’import CSV.',
+      )
+    } finally {
+      setCsvImportProgress(null)
+    }
+  }
+
+  return (
+    <>
+      <Header
+        title="Main courante"
+        action={
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={openAddDepense}
+            >
+              <Plus className="h-4 w-4" />
+              Ajouter une dépense
+            </Button>
+            <input
+              ref={depenseCsvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={handleDepensesCsvChange}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => depenseCsvInputRef.current?.click()}
+            >
+              <Upload className="h-4 w-4" />
+              Importer CSV
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy || items.length === 0}
+              onClick={handleExport}
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+          </div>
+        }
+      />
+      {csvImportProgress ? (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-valuenow={csvImportProgress.current}
+          aria-valuemin={0}
+          aria-valuemax={csvImportProgress.total}
+          className="border-b border-[var(--color-border)] bg-stone-100 px-4 py-2 md:px-8"
+        >
+          <div className="flex max-w-4xl flex-wrap items-center justify-between gap-2 text-sm text-stone-800">
+            <span>
+              Import CSV —{' '}
+              {csvImportProgress.current === 0 ? (
+                <>
+                  démarrage… ({csvImportProgress.total} ligne
+                  {csvImportProgress.total > 1 ? 's' : ''})
+                </>
+              ) : (
+                <>
+                  ligne {csvImportProgress.current} / {csvImportProgress.total}
+                  {csvImportProgress.nom ? (
+                    <span className="text-stone-600">
+                      {' '}
+                      ({csvImportProgress.nom})
+                    </span>
+                  ) : null}
+                </>
+              )}
+            </span>
+            <span className="tabular-nums text-stone-500">
+              {csvImportProgress.total > 0
+                ? Math.min(
+                    100,
+                    Math.round(
+                      (csvImportProgress.current / csvImportProgress.total) *
+                        100,
+                    ),
+                  )
+                : 0}
+              %
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 max-w-4xl overflow-hidden rounded bg-stone-200">
+            <div
+              className="h-full rounded bg-[var(--color-amber)] transition-[width] duration-150 ease-out"
+              style={{
+                width:
+                  csvImportProgress.total > 0
+                    ? `${(csvImportProgress.current / csvImportProgress.total) * 100}%`
+                    : '0%',
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+      {csvImportFeedback ? (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className={cn(
+            'border-b px-4 py-3 md:px-8',
+            csvImportFeedback.variant === 'error' &&
+              'border-red-300 bg-red-50 text-red-950',
+            csvImportFeedback.variant === 'warning' &&
+              'border-amber-300 bg-amber-50 text-amber-950',
+            csvImportFeedback.variant === 'success' &&
+              'border-stone-200 bg-stone-100 text-stone-900',
+          )}
+        >
+          <div className="mx-auto flex max-w-4xl gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium leading-snug">
+                {csvImportFeedback.summary}
+              </p>
+              {csvImportFeedback.details?.length ? (
+                <ul className="mt-2 max-h-52 list-disc space-y-1 overflow-y-auto pl-5 text-xs leading-relaxed opacity-95">
+                  {csvImportFeedback.details.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              className="shrink-0 !p-1"
+              aria-label="Fermer le message"
+              onClick={dismissCsvFeedback}
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <DepenseAddOffcanvas
+        key={addDepenseNonce}
+        open={addDepenseOpen}
+        onClose={() => setAddDepenseOpen(false)}
+        budgetItems={budgetItems}
+        categoryCodes={categories.map((c) => ({
+          code: c.code,
+          libelle: c.libelle,
+        }))}
+        disabled={busy}
+        isPending={create.isPending}
+        onSubmit={async (v) => {
+          await create.mutateAsync({
+            date: v.date,
+            produit: v.produit,
+            budgetItemId: v.budgetItemId,
+            categorieCode: v.categorieCode,
+            quantite: v.quantite,
+            unite: v.unite ?? null,
+            prixUnitaire: v.prixUnitaire,
+            note: null,
+          })
+        }}
+      />
+      <div className="space-y-6 p-4 md:px-8 md:py-6">
+        <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
+          <div>
+            <label className="mb-1 block text-xs text-stone-600">Du</label>
+            <Input
+              type="date"
+              value={after}
+              onChange={(e) => setAfter(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-stone-600">Au</label>
+            <Input
+              type="date"
+              value={before}
+              onChange={(e) => setBefore(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-stone-600">Catégorie</label>
+            <Select
+              value={categorieCode}
+              onChange={(e) => setCategorieCode(e.target.value)}
+            >
+              <option value="">Toutes</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.code}>
+                  {c.libelle}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="w-full min-w-[min(100%,18rem)] flex-1 basis-full sm:basis-auto sm:min-w-[260px]">
+            <label className="mb-1 block text-xs text-stone-600">
+              Interprétation des dates dans le CSV (ex. 04/01/2026)
+            </label>
+            <Select
+              value={csvSlashDateOrder}
+              onChange={(e) => {
+                const v = e.target.value as SlashDateOrder
+                setCsvSlashDateOrder(v)
+                try {
+                  localStorage.setItem('depensesCsvSlashDateOrder', v)
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <option value="DMY">
+                JJ/MM/AAAA — 04/01/2026 = 4 janvier
+              </option>
+              <option value="MDY">
+                MM/JJ/AAAA (Excel US) — 04/01/2026 = 1er avril
+              </option>
+            </Select>
+          </div>
+        </div>
+        <p className="text-xs text-stone-500">
+          Seules les dépenses dont la date est entre « Du » et « Au » (inclus)
+          apparaissent. Choisissez ci-dessus comment lire les dates à barres
+          obliques dans le fichier ; les dates déjà au format AAAA-MM-JJ ne
+          changent pas. Élargissez la plage si la liste est vide.
+        </p>
+
+        {datesInverted ? (
+          <p className="text-sm text-amber-800" role="status">
+            La date « Du » est après « Au » : la recherche utilise la période du{' '}
+            {formatYmdFrSlash(queryAfter)} au {formatYmdFrSlash(queryBefore)}.
+            Ajustez les champs pour clarifier.
+          </p>
+        ) : null}
+
+        {isLoading ? (
+          <p className="text-stone-600">Chargement…</p>
+        ) : isError ? (
+          <p className="text-red-600">
+            {error instanceof Error ? error.message : 'Erreur'}
+          </p>
+        ) : items.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-10 text-center">
+            <p className="text-sm text-stone-700">
+              Aucune dépense sur la période affichée (
+              {formatYmdFrSlash(queryAfter)} – {formatYmdFrSlash(queryBefore)}
+              {categorieCode ? `, catégorie filtrée` : ''}).
+            </p>
+            <p className="mt-2 text-xs text-stone-600">
+              Élargissez « Du » et « Au », choisissez « Toutes » pour la catégorie,
+              ou utilisez le raccourci ci-dessous si vous venez d’importer un
+              fichier (les lignes peuvent être sur d’autres dates).
+            </p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const end = format(new Date(), 'yyyy-MM-dd')
+                  const start = format(subDays(new Date(), 365), 'yyyy-MM-dd')
+                  setBefore(end)
+                  setAfter(start)
+                }}
+              >
+                Afficher un an jusqu’à aujourd’hui
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <DepenseList
+            items={items}
+            budgetItems={budgetItems}
+            disabled={busy}
+            onUpdate={(id, payload: DepenseEditPayload) => {
+              update.mutate({
+                id,
+                payload: {
+                  date: payload.date,
+                  produit: payload.produit,
+                  categorieCode: payload.categorieCode,
+                  quantite: payload.quantite,
+                  unite: payload.unite || null,
+                  prixUnitaire: payload.prixUnitaire,
+                  budgetItemId: payload.budgetItemId,
+                  note: null,
+                },
+              })
+            }}
+            onDelete={(id) => remove.mutate(id)}
+          />
+        )}
+      </div>
+    </>
+  )
+}
