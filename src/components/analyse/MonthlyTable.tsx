@@ -5,7 +5,7 @@ import { toAriary } from '../../utils/formatters'
 export function MonthlyTable({ rows }: { rows: MonthlyStats[] }) {
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
-      <Table>
+      <Table className="min-w-[480px]">
         <thead>
           <tr>
             <Th>Catégorie</Th>

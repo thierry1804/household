@@ -8,10 +8,12 @@ import { Card, CardContent, CardHeader } from '../components/ui/Card'
 import { Table, Th, Td } from '../components/ui/Table'
 import { useCategories } from '../hooks/useCategories'
 import { getApiErrorMessage } from '../services/api'
+import { useToast } from '../contexts/ToastContext'
 import type { Categorie } from '../types'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 
 export function ReferentialsPage() {
+  const { addToast } = useToast()
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<Categorie | null>(null)
   const [categoryToDelete, setCategoryToDelete] = useState<Categorie | null>(null)
@@ -89,8 +91,9 @@ export function ReferentialsPage() {
           try {
             await deleteCategoryMut.mutateAsync(categoryToDelete.id)
             setCategoryToDelete(null)
+            addToast({ variant: 'success', message: `Catégorie « ${categoryToDelete.libelle} » supprimée.` })
           } catch (e) {
-            window.alert(getApiErrorMessage(e))
+            addToast({ variant: 'error', message: getApiErrorMessage(e) })
           }
         }}
       >
@@ -137,7 +140,7 @@ export function ReferentialsPage() {
             {sorted.length === 0 ? (
               <p className="text-sm text-stone-500">Aucune catégorie pour le moment.</p>
             ) : (
-              <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
+              <div className="overflow-x-auto rounded-xl border border-[var(--color-border)]">
                 <Table>
                   <thead>
                     <tr>

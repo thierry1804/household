@@ -11,9 +11,11 @@ import { useCategories } from '../hooks/useCategories'
 import type { BudgetItem, Categorie } from '../types'
 import { budgetItemFromApiWithCategoryId } from '../types'
 import type { BudgetItemUpdatePayload } from '../services/budget.service'
-import { parseBudgetCsv } from '../utils/csv'
+import { parseBudgetCsv, type ParsedBudgetRow } from '../utils/csv'
 import { fetchCategories } from '../services/categories.service'
 import { getViolations } from '../services/api'
+import { useToast } from '../contexts/ToastContext'
+import { BudgetCsvPreviewModal } from '../components/budget/BudgetCsvPreviewModal'
 import axios from 'axios'
 import { Upload } from 'lucide-react'
 
@@ -32,13 +34,14 @@ function toPayload(patch: Partial<BudgetItem>): BudgetItemUpdatePayload {
 
 export function BudgetPage() {
   const qc = useQueryClient()
+  const { addToast } = useToast()
   const {
     data: categories = [],
     isLoading: catLoading,
     createCategory: createCategoryMutation,
   } = useCategories()
   const [categoryModalOpen, setCategoryModalOpen] = useState(false)
-  /** Modale « Nouvelle catégorie » ouverte depuis le panneau d’ajout de poste. */
+  /** Modale « Nouvelle catégorie » ouverte depuis le panneau d'ajout de poste. */
   const [categoryModalFromAddPost, setCategoryModalFromAddPost] =
     useState(false)
   const [addPostPreselectCategoryId, setAddPostPreselectCategoryId] = useState<
@@ -55,6 +58,10 @@ export function BudgetPage() {
     total: number
     nom: string
   } | null>(null)
+  const [csvPreviewOpen, setCsvPreviewOpen] = useState(false)
+  const [csvPreviewRows, setCsvPreviewRows] = useState<ParsedBudgetRow[]>([])
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<number>>(new Set())
+  const deleteTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
   const {
     data: items = [],
     isLoading,
@@ -84,26 +91,59 @@ export function BudgetPage() {
     createCategoryMutation.isPending ||
     csvImportProgress != null
 
-  function handleSave(id: number, patch: Partial<BudgetItem>) {
+  async function handleSave(id: number, patch: Partial<BudgetItem>): Promise<void> {
     if (patch.nom !== undefined) {
       const key = patch.nom.trim().toLowerCase()
       const conflict = items.find(
         (i) => i.id !== id && i.nom.trim().toLowerCase() === key,
       )
       if (conflict) {
-        window.alert(
-          `Le nom « ${patch.nom.trim()} » est déjà utilisé par un autre poste. Chaque poste doit avoir un nom unique.`,
-        )
+        addToast({
+          variant: 'error',
+          message: `Le nom \u00ab\u00a0${patch.nom.trim()}\u00a0\u00bb est d\u00e9j\u00e0 utilis\u00e9 par un autre poste. Chaque poste doit avoir un nom unique.`,
+        })
         return
       }
     }
     const payload = toPayload(patch)
     if (Object.keys(payload).length === 0) return
-    update.mutate({ id, payload })
+    await update.mutateAsync({ id, payload })
   }
 
   function handleDelete(id: number) {
-    if (window.confirm('Supprimer ce poste budgétaire ?')) remove.mutate(id)
+    setPendingDeleteIds((prev) => new Set([...prev, id]))
+    addToast({
+      message: 'Poste supprim\u00e9',
+      variant: 'info',
+      duration: 5000,
+      action: {
+        label: 'Annuler',
+        onClick: () => cancelDelete(id),
+      },
+    })
+    const timer = setTimeout(() => {
+      remove.mutate(id)
+      setPendingDeleteIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      deleteTimers.current.delete(id)
+    }, 5000)
+    deleteTimers.current.set(id, timer)
+  }
+
+  function cancelDelete(id: number) {
+    const timer = deleteTimers.current.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      deleteTimers.current.delete(id)
+    }
+    setPendingDeleteIds((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
   }
 
   /** Première catégorie existante, ou création de « Divers » si la liste est vide. */
@@ -134,7 +174,7 @@ export function BudgetPage() {
       )
       if (sorted.length) return sorted[0].id
       throw new Error(
-        'Impossible de créer une catégorie par défaut. Vérifiez l’API /api/categories.',
+        'Impossible de cr\u00e9er une cat\u00e9gorie par d\u00e9faut. V\u00e9rifiez l\u2019API /api/categories.',
       )
     }
   }
@@ -153,17 +193,25 @@ export function BudgetPage() {
     e.target.value = ''
     if (!file) return
     const text = await file.text()
-    let parsed
+    let parsed: ParsedBudgetRow[]
     try {
       parsed = parseBudgetCsv(text)
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : 'CSV invalide')
+      addToast({ variant: 'error', message: err instanceof Error ? err.message : 'CSV invalide' })
       return
     }
     if (parsed.length === 0) {
-      window.alert('Aucune ligne importable dans ce fichier.')
+      addToast({ variant: 'warning', message: 'Aucune ligne importable dans ce fichier.' })
       return
     }
+    // Ouvrir la modale de prévisualisation
+    setCsvPreviewRows(parsed)
+    setCsvPreviewOpen(true)
+  }
+
+  async function executeCsvImport() {
+    const parsed = csvPreviewRows
+    setCsvPreviewOpen(false)
 
     const catMap = new Map(
       categories.map((c) => [c.code.toLowerCase(), c] as const),
@@ -219,16 +267,18 @@ export function BudgetPage() {
             if (!cat) {
               const v = getViolations(err)
               if (v.length) {
-                window.alert(
-                  v.map((x) => `${x.field}: ${x.message}`).join('\n'),
-                )
+                addToast({
+                  variant: 'error',
+                  message: v.map((x) => `${x.field}: ${x.message}`).join(' — '),
+                })
               } else if (axios.isAxiosError(err)) {
                 const data = err.response?.data as { error?: string } | undefined
-                window.alert(data?.error ?? err.message)
+                addToast({ variant: 'error', message: data?.error ?? err.message })
               } else {
-                window.alert(
-                  err instanceof Error ? err.message : 'Catégorie introuvable',
-                )
+                addToast({
+                  variant: 'error',
+                  message: err instanceof Error ? err.message : 'Cat\u00e9gorie introuvable',
+                })
               }
               bumpRow(i, nomDisplay)
               continue
@@ -269,12 +319,14 @@ export function BudgetPage() {
         }
         bumpRow(i, nomDisplay)
       }
+      addToast({ variant: 'success', message: `${parsed.length} poste(s) import\u00e9(s).` })
     } catch (err) {
-      window.alert(
-        err instanceof Error
+      addToast({
+        variant: 'error',
+        message: err instanceof Error
           ? err.message
-          : 'Erreur pendant l’import du fichier.',
-      )
+          : 'Erreur pendant l\u2019import du fichier.',
+      })
     } finally {
       setCsvImportProgress(null)
     }
@@ -283,8 +335,8 @@ export function BudgetPage() {
   if (catLoading || isLoading) {
     return (
       <>
-        <Header title="Budget prévisionnel" />
-        <div className="p-4 md:px-8">Chargement…</div>
+        <Header title="Budget pr\u00e9visionnel" />
+        <div className="p-4 md:px-8">Chargement\u2026</div>
       </>
     )
   }
@@ -292,7 +344,7 @@ export function BudgetPage() {
   if (isError) {
     return (
       <>
-        <Header title="Budget prévisionnel" />
+        <Header title="Budget pr\u00e9visionnel" />
         <div className="p-4 text-red-600 md:px-8">
           {error instanceof Error ? error.message : 'Erreur'}
         </div>
@@ -303,7 +355,7 @@ export function BudgetPage() {
   return (
     <>
       <Header
-        title="Budget prévisionnel"
+        title="Budget pr\u00e9visionnel"
         action={
           <div className="flex flex-wrap gap-2">
             <input
@@ -345,7 +397,7 @@ export function BudgetPage() {
             <span>
               Import CSV —{' '}
               {csvImportProgress.current === 0 ? (
-                <>démarrage… ({csvImportProgress.total} ligne{csvImportProgress.total > 1 ? 's' : ''})</>
+                <>d\u00e9marrage\u2026 ({csvImportProgress.total} ligne{csvImportProgress.total > 1 ? 's' : ''})</>
               ) : (
                 <>
                   ligne {csvImportProgress.current} / {csvImportProgress.total}
@@ -384,6 +436,14 @@ export function BudgetPage() {
           </div>
         </div>
       ) : null}
+      <BudgetCsvPreviewModal
+        open={csvPreviewOpen}
+        onClose={() => setCsvPreviewOpen(false)}
+        rows={csvPreviewRows}
+        existingItems={items}
+        onConfirm={executeCsvImport}
+        isPending={busy}
+      />
       <BudgetAddPostOffcanvas
         key={addPostNonce}
         open={addPostOpen}
@@ -427,6 +487,7 @@ export function BudgetPage() {
           onDeleteRow={handleDelete}
           onAddItem={openAddPost}
           disabled={busy}
+          pendingDeleteIds={pendingDeleteIds}
         />
       </div>
     </>

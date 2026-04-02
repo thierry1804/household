@@ -5,8 +5,10 @@ import { DateFrField } from '../ui/DateFrField'
 import { BudgetPostSearchField } from './BudgetPostSearchField'
 import { Input } from '../ui/Input'
 import { Button } from '../ui/Button'
-import { Trash2 } from 'lucide-react'
+import { AlertCircle, Check, Loader2, Trash2 } from 'lucide-react'
 import type { DepenseEditPayload } from './DepenseForm'
+
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 function toDraft(r: DepenseApi): DepenseEditPayload {
   return {
@@ -38,16 +40,20 @@ export function DepenseEditableRow({
   onUpdate,
   onDelete,
   disabled,
+  pendingDelete,
 }: {
   row: DepenseApi
   budgetItems: BudgetItem[]
-  onUpdate: (id: number, payload: DepenseEditPayload) => void
+  onUpdate: (id: number, payload: DepenseEditPayload) => Promise<void>
   onDelete: (id: number) => void
   disabled?: boolean
+  pendingDelete?: boolean
 }) {
   const [draft, setDraft] = useState(() => toDraft(row))
   const draftRef = useRef(toDraft(row))
   const lastSaved = useRef(toDraft(row))
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function setDraftBoth(next: DepenseEditPayload) {
     draftRef.current = next
@@ -70,12 +76,20 @@ export function DepenseEditableRow({
     row.budgetItem?.id,
   ])
 
-  function commitIfDirty() {
+  async function commitIfDirty() {
     if (disabled) return
     const cur = draftRef.current
     if (draftsEqual(cur, lastSaved.current)) return
     lastSaved.current = cur
-    onUpdate(row.id, cur)
+    setSaveStatus('saving')
+    try {
+      await onUpdate(row.id, cur)
+      setSaveStatus('saved')
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch {
+      setSaveStatus('error')
+    }
   }
 
   const montantPreview = Math.round(draft.quantite * draft.prixUnitaire)
@@ -83,8 +97,10 @@ export function DepenseEditableRow({
     a.nom.localeCompare(b.nom, 'fr'),
   )
 
+  const rowStyle = pendingDelete ? 'opacity-40 pointer-events-none' : ''
+
   return (
-    <tr className="border-b border-[var(--color-border)]">
+    <tr className={`border-b border-[var(--color-border)] ${rowStyle}`}>
       <td className="overflow-visible px-2 py-1.5 align-top">
         <DateFrField
           valueYmd={draft.date}
@@ -93,7 +109,7 @@ export function DepenseEditableRow({
           }
           onCommit={commitIfDirty}
           disabled={disabled}
-          aria-label="Date de la dépense (jj/mm/aaaa)"
+          aria-label="Date de la d\u00e9pense (jj/mm/aaaa)"
           inputClassName="min-w-[7.5rem] py-1.5 text-sm"
         />
       </td>
@@ -168,7 +184,14 @@ export function DepenseEditableRow({
               setDraftBoth(next)
               if (!draftsEqual(next, lastSaved.current)) {
                 lastSaved.current = next
+                setSaveStatus('saving')
                 onUpdate(row.id, next)
+                  .then(() => {
+                    setSaveStatus('saved')
+                    if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+                    savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+                  })
+                  .catch(() => setSaveStatus('error'))
               }
               return
             }
@@ -183,24 +206,40 @@ export function DepenseEditableRow({
             setDraftBoth(next)
             if (!draftsEqual(next, lastSaved.current)) {
               lastSaved.current = next
+              setSaveStatus('saving')
               onUpdate(row.id, next)
+                .then(() => {
+                  setSaveStatus('saved')
+                  if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+                  savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+                })
+                .catch(() => setSaveStatus('error'))
             }
           }}
         />
       </td>
       <td className="px-2 py-1.5 align-top">
-        <Button
-          type="button"
-          variant="ghost"
-          className="!p-2 text-red-600"
-          disabled={disabled}
-          onClick={() => {
-            if (window.confirm('Supprimer cette dépense ?')) onDelete(row.id)
-          }}
-          aria-label="Supprimer"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1">
+          {saveStatus === 'saving' && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-stone-400" aria-label="Sauvegarde\u2026" />
+          )}
+          {saveStatus === 'saved' && (
+            <Check className="h-3.5 w-3.5 text-emerald-500" aria-label="Sauvegardd\u00e9" />
+          )}
+          {saveStatus === 'error' && (
+            <AlertCircle className="h-3.5 w-3.5 text-red-500" aria-label="Erreur de sauvegarde" />
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            className="!p-2 text-red-600"
+            disabled={disabled}
+            onClick={() => onDelete(row.id)}
+            aria-label="Supprimer"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </td>
     </tr>
   )

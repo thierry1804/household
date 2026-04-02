@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
+import { ToastContainer } from '../ui/ToastContainer'
 
 const STORAGE_KEY = 'household-sidebar-collapsed'
 
@@ -32,6 +33,7 @@ export function Layout() {
           <Outlet />
         </Suspense>
       </main>
+      <ToastContainer />
     </div>
   )
 }

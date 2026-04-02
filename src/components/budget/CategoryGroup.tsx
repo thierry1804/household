@@ -17,15 +17,17 @@ export function CategoryGroup({
   onDeleteRow,
   onAddItem,
   disabled,
+  pendingDeleteIds,
 }: {
   code: string
   label: string
   items: BudgetItem[]
   categories: Categorie[]
-  onSaveRow: (id: number, patch: Partial<BudgetItem>) => void
+  onSaveRow: (id: number, patch: Partial<BudgetItem>) => Promise<void>
   onDeleteRow: (id: number) => void
   onAddItem: (categorieId?: number) => void
   disabled?: boolean
+  pendingDeleteIds?: Set<number>
 }) {
   const [open, setOpen] = useState(true)
   const subtotal = items.reduce((s, i) => s + i.quantite * i.prixUnitaire, 0)
@@ -94,6 +96,7 @@ export function CategoryGroup({
                   onSave={onSaveRow}
                   onDelete={onDeleteRow}
                   disabled={disabled}
+                  pendingDelete={pendingDeleteIds?.has(row.id)}
                 />
               ))}
             </tbody>

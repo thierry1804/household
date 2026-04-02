@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { BudgetItem, Categorie, Periodicite } from '../../types'
 import { Input, Select } from '../ui/Input'
 import { Button } from '../ui/Button'
 import { toAriary } from '../../utils/formatters'
 import { computeMontantMensuel } from '../../utils/periodicite'
-import { Trash2 } from 'lucide-react'
+import { AlertCircle, Check, Loader2, Trash2 } from 'lucide-react'
+import { cn } from '../../utils/cn'
 
 const PERIODICITES: Periodicite[] = [
   'MOIS',
@@ -14,20 +15,26 @@ const PERIODICITES: Periodicite[] = [
   'ANNEE',
 ]
 
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
 export function BudgetItemRow({
   item,
   categories,
   onSave,
   onDelete,
   disabled,
+  pendingDelete,
 }: {
   item: BudgetItem
   categories: Categorie[]
-  onSave: (id: number, patch: Partial<BudgetItem>) => void
+  onSave: (id: number, patch: Partial<BudgetItem>) => Promise<void>
   onDelete: (id: number) => void
   disabled?: boolean
+  pendingDelete?: boolean
 }) {
   const [local, setLocal] = useState(item)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     setLocal(item)
@@ -41,20 +48,38 @@ export function BudgetItemRow({
     local.frequence,
   )
 
-  function commit(field: keyof BudgetItem, value: string | number | boolean) {
+  async function commit(field: keyof BudgetItem, value: string | number | boolean) {
     const next = { ...local, [field]: value }
     setLocal(next as BudgetItem)
-    onSave(item.id, { [field]: value } as Partial<BudgetItem>)
+    setSaveStatus('saving')
+    try {
+      await onSave(item.id, { [field]: value } as Partial<BudgetItem>)
+      setSaveStatus('saved')
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch {
+      setSaveStatus('error')
+    }
   }
 
-  function setFrequence(v: number) {
+  async function setFrequence(v: number) {
     const n = Math.max(1, Math.floor(Number.isFinite(v) ? v : 1))
     setLocal({ ...local, frequence: n })
-    if (n !== item.frequence) onSave(item.id, { frequence: n })
+    if (n !== item.frequence) {
+      setSaveStatus('saving')
+      try {
+        await onSave(item.id, { frequence: n })
+        setSaveStatus('saved')
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+        savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+      } catch {
+        setSaveStatus('error')
+      }
+    }
   }
 
   return (
-    <tr className="border-b border-[var(--color-border)]">
+    <tr className={cn('border-b border-[var(--color-border)]', pendingDelete && 'opacity-40 pointer-events-none')}>
       <td className="px-2 py-2 align-middle">
         <Input
           value={local.nom}
@@ -170,16 +195,27 @@ export function BudgetItemRow({
         </Select>
       </td>
       <td className="px-2 py-2 align-middle">
-        <Button
-          type="button"
-          variant="ghost"
-          className="!p-2 text-red-600"
-          disabled={disabled}
-          onClick={() => onDelete(item.id)}
-          aria-label="Supprimer"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1">
+          {saveStatus === 'saving' && (
+            <Loader2 className="h-4 w-4 animate-spin text-stone-400" aria-label="Sauvegarde…" />
+          )}
+          {saveStatus === 'saved' && (
+            <Check className="h-4 w-4 text-emerald-500" aria-label="Sauvegardé" />
+          )}
+          {saveStatus === 'error' && (
+            <AlertCircle className="h-4 w-4 text-red-500" aria-label="Erreur de sauvegarde" />
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            className="!p-2 text-red-600"
+            disabled={disabled}
+            onClick={() => onDelete(item.id)}
+            aria-label="Supprimer"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </td>
     </tr>
   )

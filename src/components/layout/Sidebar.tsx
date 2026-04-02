@@ -71,7 +71,7 @@ export function Sidebar({
           )}
         </Button>
       </div>
-      <nav className="flex flex-row gap-1 overflow-x-auto px-2 py-2 md:flex-col md:overflow-visible md:px-2 md:py-3">
+      <nav className="flex flex-row px-1 py-1.5 md:flex-col md:px-2 md:py-3">
         {links.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
@@ -80,7 +80,7 @@ export function Sidebar({
             title={label}
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-stone-700 transition-colors',
+                'flex flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-stone-600 transition-colors md:flex-none md:flex-row md:gap-2 md:px-3 md:py-2 md:text-sm md:font-medium md:text-stone-700',
                 isActive
                   ? 'bg-amber-500/15 text-[var(--color-ink)]'
                   : 'hover:bg-stone-100',
@@ -88,13 +88,8 @@ export function Sidebar({
               )
             }
           >
-            <Icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
-            <span
-              className={cn(
-                'whitespace-nowrap',
-                collapsed && 'md:sr-only',
-              )}
-            >
+            <Icon className="h-5 w-5 shrink-0 md:h-4 md:w-4 md:opacity-80" aria-hidden />
+            <span className={cn('sr-only md:not-sr-only md:text-sm', collapsed && 'md:sr-only')}>
               {label}
             </span>
           </NavLink>

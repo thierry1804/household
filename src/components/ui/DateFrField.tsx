@@ -131,7 +131,7 @@ export function DateFrField({
       </div>
       {open ? (
         <div
-          className="absolute left-0 top-full z-[100] mt-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-2 shadow-md"
+          className="absolute left-0 top-full z-[100] mt-1 max-w-[calc(100vw-2rem)] overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-2 shadow-md"
           role="dialog"
           aria-label="Calendrier"
         >

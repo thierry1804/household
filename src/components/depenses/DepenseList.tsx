@@ -10,12 +10,14 @@ export function DepenseList({
   onUpdate,
   onDelete,
   disabled,
+  pendingDeleteIds,
 }: {
   items: DepenseApi[]
   budgetItems: BudgetItem[]
-  onUpdate: (id: number, payload: DepenseEditPayload) => void
+  onUpdate: (id: number, payload: DepenseEditPayload) => Promise<void>
   onDelete: (id: number) => void
   disabled?: boolean
+  pendingDeleteIds?: Set<number>
 }) {
   const byDate = useMemo(() => {
     const map = new Map<string, DepenseApi[]>()
@@ -61,6 +63,7 @@ export function DepenseList({
                       onUpdate={onUpdate}
                       onDelete={onDelete}
                       disabled={disabled}
+                      pendingDelete={pendingDeleteIds?.has(row.id)}
                     />
                   ))}
                 </tbody>

@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react'
 import { Header } from '../components/layout/Header'
 import { BudgetVsReelStats } from '../components/analyse/BudgetVsReelStats'
 import { MonthlyTable } from '../components/analyse/MonthlyTable'
+import { MultiMonthTrend } from '../components/analyse/MultiMonthTrend'
 import { RecommendationCard } from '../components/analyse/RecommendationCard'
 import { Card, CardContent, CardHeader } from '../components/ui/Card'
+import { Button } from '../components/ui/Button'
 import { Select } from '../components/ui/Input'
 import { useQuery } from '@tanstack/react-query'
 import { fetchBudgetItems } from '../services/budget.service'
@@ -18,6 +20,7 @@ import {
 } from '../services/aggregate'
 import { toAriary } from '../utils/formatters'
 import { labelForCategoryCode } from '../utils/categories'
+import { Download } from 'lucide-react'
 
 export function AnalysePage() {
   const now = new Date()
@@ -89,7 +92,7 @@ export function AnalysePage() {
     <>
       <Header title="Analyse" />
       <div className="space-y-6 p-4 md:px-8 md:py-6">
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:flex sm:flex-wrap sm:items-end">
           <div>
             <label className="mb-1 block text-xs text-stone-600">Année</label>
             <Select
@@ -116,7 +119,7 @@ export function AnalysePage() {
               ))}
             </Select>
           </div>
-          <div className="min-w-[min(100%,20rem)]">
+          <div className="col-span-2 sm:min-w-[min(100%,20rem)]">
             <label className="mb-1 block text-xs text-stone-600">Catégorie</label>
             <Select
               value={drillCode}
@@ -143,11 +146,46 @@ export function AnalysePage() {
         />
 
         <div>
-          <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
-            Comparaison mensuelle
-          </h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
+              Comparaison mensuelle
+            </h2>
+            <Button
+              type="button"
+              variant="secondary"
+              className="text-xs"
+              disabled={data.monthly.length === 0}
+              onClick={() => {
+                const header = 'Catégorie,Prévision,Réel,Écart,%'
+                const body = data.monthly
+                  .map((row) =>
+                    [
+                      `"${row.categorie.replace(/"/g, '""')}"`,
+                      row.prevision,
+                      row.reel,
+                      row.ecart,
+                      row.pourcentage,
+                    ].join(','),
+                  )
+                  .join('\n')
+                const csv = `${header}\n${body}`
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `analyse-${String(month).padStart(2, '0')}-${year}.csv`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </Button>
+          </div>
           <MonthlyTable rows={data.monthly} />
         </div>
+
+        <MultiMonthTrend year={year} month={month} />
 
         <div>
           <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">

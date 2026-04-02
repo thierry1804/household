@@ -41,7 +41,7 @@ export function ConfirmDialog({
         <div id={descriptionId} className="text-sm leading-relaxed text-stone-600">
           {children}
         </div>
-        <div className="flex flex-row flex-nowrap items-center justify-end gap-2 border-t border-[var(--color-border)] pt-4">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--color-border)] pt-4">
           <Button
             type="button"
             variant="secondary"

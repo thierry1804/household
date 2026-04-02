@@ -26,14 +26,16 @@ export function BudgetTable({
   onDeleteRow,
   onAddItem,
   disabled,
+  pendingDeleteIds,
 }: {
   items: BudgetItem[]
   categories: Categorie[]
-  onSaveRow: (id: number, patch: Partial<BudgetItem>) => void
+  onSaveRow: (id: number, patch: Partial<BudgetItem>) => Promise<void>
   onDeleteRow: (id: number) => void
   /** Sans `categorieId`, la page crée si besoin une catégorie « Divers » puis le poste. */
   onAddItem: (categorieId?: number) => void
   disabled?: boolean
+  pendingDeleteIds?: Set<number>
 }) {
   const [view, setView] = useState<'grouped' | 'table'>('grouped')
 
@@ -130,6 +132,7 @@ export function BudgetTable({
                     onSave={onSaveRow}
                     onDelete={onDeleteRow}
                     disabled={disabled}
+                    pendingDelete={pendingDeleteIds?.has(row.id)}
                   />
                 ))}
               </tbody>
@@ -151,6 +154,7 @@ export function BudgetTable({
               onDeleteRow={onDeleteRow}
               onAddItem={onAddItem}
               disabled={disabled}
+              pendingDeleteIds={pendingDeleteIds}
             />
           )
         })

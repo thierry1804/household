@@ -1,6 +1,7 @@
 import { lazy } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Layout } from './components/layout/Layout'
+import { ToastProvider } from './contexts/ToastContext'
 
 const DashboardPage = lazy(() =>
   import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
@@ -20,6 +21,7 @@ const AnalysePage = lazy(() =>
 
 export default function App() {
   return (
+    <ToastProvider>
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
@@ -32,5 +34,6 @@ export default function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+    </ToastProvider>
   )
 }

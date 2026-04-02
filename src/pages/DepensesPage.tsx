@@ -5,21 +5,23 @@ import { format, subDays } from 'date-fns'
 import { Header } from '../components/layout/Header'
 import { DepenseAddOffcanvas } from '../components/depenses/DepenseAddOffcanvas'
 import { DepenseList } from '../components/depenses/DepenseList'
+import { DepenseCsvPreviewModal } from '../components/depenses/DepenseCsvPreviewModal'
 import type { DepenseEditPayload } from '../components/depenses/DepenseForm'
 import { Button } from '../components/ui/Button'
 import { DateFrField } from '../components/ui/DateFrField'
-import { Select } from '../components/ui/Input'
+import { Input, Select } from '../components/ui/Input'
 import { useBudgetItems } from '../hooks/useBudgetItems'
 import { useCategories } from '../hooks/useCategories'
 import { useDepenseMutations } from '../hooks/useDepenses'
 import { fetchDepensesAllFiltered } from '../services/depenses.service'
-import { depensesToCsv, parseDepensesCsvWithMeta } from '../utils/csv'
+import { depensesToCsv, parseDepensesCsvWithMeta, type ParsedDepenseCsvRow } from '../utils/csv'
 import { getApiErrorMessage, getViolations } from '../services/api'
 import { slugifyReferentialCode } from '../utils/slug'
 import type { Categorie } from '../types'
 import { Download, Plus, Upload, X } from 'lucide-react'
 import { cn } from '../utils/cn'
 import { formatYmdFrSlash } from '../utils/formatters'
+import { useToast } from '../contexts/ToastContext'
 
 function resolveCategorieCode(
   raw: string,
@@ -37,7 +39,7 @@ function resolveCategorieCode(
   return bySlug?.code ?? null
 }
 
-/** Quand le CSV n’a pas de catégorie / poste ou des cellules vides. */
+/** Quand le CSV n'a pas de catégorie / poste ou des cellules vides. */
 function defaultCategorieCode(categories: Categorie[]): string | null {
   if (categories.length === 0) return null
   const divers = categories.find((c) => c.code.toLowerCase() === 'divers')
@@ -53,6 +55,7 @@ export function DepensesPage() {
   const { data: budgetItems = [] } = useBudgetItems()
   const { create, update, remove } = useDepenseMutations()
   const queryClient = useQueryClient()
+  const { addToast } = useToast()
 
   /** Par défaut : « Du » et « Au » = date du jour. */
   const defaultToday = useMemo(() => format(new Date(), 'yyyy-MM-dd'), [])
@@ -60,13 +63,14 @@ export function DepensesPage() {
   const [after, setAfter] = useState(defaultToday)
   const [before, setBefore] = useState(defaultToday)
   const [categorieCode, setCategorieCode] = useState('')
+  const [searchText, setSearchText] = useState('')
   const [csvImportProgress, setCsvImportProgress] = useState<{
     current: number
     total: number
     nom: string
   } | null>(null)
   const depenseCsvInputRef = useRef<HTMLInputElement>(null)
-  /** Messages d’import (les `alert()` sont souvent bloqués dans les navigateurs embarqués). */
+  /** Messages d'import */
   const [csvImportFeedback, setCsvImportFeedback] = useState<{
     variant: 'error' | 'success' | 'warning'
     summary: string
@@ -74,6 +78,10 @@ export function DepensesPage() {
   } | null>(null)
   const [addDepenseOpen, setAddDepenseOpen] = useState(false)
   const [addDepenseNonce, setAddDepenseNonce] = useState(0)
+  const [csvPreviewOpen, setCsvPreviewOpen] = useState(false)
+  const [csvPreviewRows, setCsvPreviewRows] = useState<ParsedDepenseCsvRow[]>([])
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<number>>(new Set())
+  const deleteTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
 
   function dismissCsvFeedback() {
     setCsvImportFeedback(null)
@@ -82,14 +90,6 @@ export function DepensesPage() {
   function openAddDepense() {
     setAddDepenseNonce((n) => n + 1)
     setAddDepenseOpen(true)
-  }
-
-  function reportCsvParseError(message: string) {
-    console.error('[Import CSV]', message)
-    setCsvImportFeedback({
-      variant: 'error',
-      summary: message,
-    })
   }
 
   function reportCsvResult(
@@ -108,7 +108,7 @@ export function DepensesPage() {
     setCsvImportFeedback({ variant, summary, details })
   }
 
-  /** Si Du > Au, l’API renvoie souvent vide — on interprète comme min/max. */
+  /** Si Du > Au, l'API renvoie souvent vide — on interprète comme min/max. */
   const { queryAfter, queryBefore, datesInverted } = useMemo(() => {
     if (after <= before) {
       return { queryAfter: after, queryBefore: before, datesInverted: false }
@@ -141,6 +141,15 @@ export function DepensesPage() {
       ),
     [items, queryAfter, queryBefore],
   )
+
+  /** Filtrage texte côté client */
+  const filteredItems = useMemo(() => {
+    if (!searchText.trim()) return itemsInRange
+    const lower = searchText.toLowerCase()
+    return itemsInRange.filter((d) => d.produit.toLowerCase().includes(lower))
+  }, [itemsInRange, searchText])
+
+  const isFiltered = searchText.trim().length > 0 || categorieCode !== ''
 
   const busy =
     create.isPending ||
@@ -200,11 +209,9 @@ export function DepensesPage() {
             ? 'tabulation'
             : 'virgule'
     } catch (err) {
-      reportCsvParseError(
-        err instanceof Error
-          ? err.message
-          : 'Fichier CSV invalide ou incomplet.',
-      )
+      const msg = err instanceof Error ? err.message : 'Fichier CSV invalide ou incomplet.'
+      console.error('[Import CSV]', msg)
+      setCsvImportFeedback({ variant: 'error', summary: msg })
       return
     }
     if (parsed.length === 0) {
@@ -217,7 +224,15 @@ export function DepensesPage() {
       return
     }
 
-    const total = parsed.length
+    // Ouvrir la modale de prévisualisation
+    setCsvPreviewRows(parsed)
+    setCsvPreviewOpen(true)
+  }
+
+  async function executeCsvImport(rowsToImport: ParsedDepenseCsvRow[]) {
+    setCsvPreviewOpen(false)
+
+    const total = rowsToImport.length
     function bumpRow(index: number, nom: string) {
       flushSync(() => {
         setCsvImportProgress({ current: index + 1, total, nom })
@@ -230,12 +245,13 @@ export function DepensesPage() {
 
     let imported = 0
     let failed = 0
+    let skipped = 0
     const errorLines: string[] = []
     /** Dates des lignes réellement créées (pour élargir Du / Au si besoin). */
     const importedDates: string[] = []
     try {
-      for (let i = 0; i < parsed.length; i++) {
-        const row = parsed[i]
+      for (let i = 0; i < rowsToImport.length; i++) {
+        const row = rowsToImport[i]
         let categorieResolved: string | null = null
         let budgetItemId: number | null = null
         if (row.posteBudgetaireRaw) {
@@ -265,6 +281,22 @@ export function DepensesPage() {
           bumpRow(i, row.produit)
           continue
         }
+
+        // Vérification doublon parmi items existants
+        const montantCalc = Math.round(row.quantite * row.prixUnitaire)
+        const produitLower = row.produit.trim().toLowerCase()
+        const isDuplicate = itemsInRange.some(
+          (d) =>
+            d.date === row.dateIso &&
+            d.produit.trim().toLowerCase() === produitLower &&
+            d.montant === montantCalc,
+        )
+        if (isDuplicate) {
+          skipped++
+          bumpRow(i, row.produit)
+          continue
+        }
+
         try {
           await create.mutateAsync({
             date: row.dateIso,
@@ -291,6 +323,7 @@ export function DepensesPage() {
       }
       let summary =
         `${imported} ligne(s) importée(s).` +
+        (skipped ? ` ${skipped} doublon(s) ignoré(s).` : '') +
         (failed ? ` ${failed} ligne(s) ignorée(s) ou en échec.` : '')
       if (importedDates.length > 0) {
         const sorted = [...importedDates].sort()
@@ -313,14 +346,64 @@ export function DepensesPage() {
         errorLines.length > 0 ? errorLines.slice(0, 20) : undefined,
       )
     } catch (err) {
-      reportCsvParseError(
-        err instanceof Error
-          ? err.message
-          : 'Erreur pendant l’import CSV.',
-      )
+      const msg = err instanceof Error ? err.message : 'Erreur pendant l\u2019import CSV.'
+      console.error('[Import CSV]', msg)
+      setCsvImportFeedback({ variant: 'error', summary: msg })
     } finally {
       setCsvImportProgress(null)
     }
+  }
+
+  function handleDelete(id: number) {
+    setPendingDeleteIds((prev) => new Set([...prev, id]))
+    addToast({
+      message: 'Dépense supprimée',
+      variant: 'info',
+      duration: 5000,
+      action: {
+        label: 'Annuler',
+        onClick: () => cancelDelete(id),
+      },
+    })
+    const timer = setTimeout(() => {
+      remove.mutate(id)
+      setPendingDeleteIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      deleteTimers.current.delete(id)
+    }, 5000)
+    deleteTimers.current.set(id, timer)
+  }
+
+  function cancelDelete(id: number) {
+    const timer = deleteTimers.current.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      deleteTimers.current.delete(id)
+    }
+    setPendingDeleteIds((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }
+
+  async function handleUpdate(id: number, payload: DepenseEditPayload): Promise<void> {
+    await update.mutateAsync({
+      id,
+      payload: {
+        date: payload.date,
+        produit: payload.produit,
+        categorieCode: payload.categorieCode,
+        quantite: payload.quantite,
+        unite: payload.unite || null,
+        prixUnitaire: payload.prixUnitaire,
+        budgetItemId: payload.budgetItemId,
+        note: null,
+      },
+    })
   }
 
   return (
@@ -459,6 +542,14 @@ export function DepensesPage() {
           </div>
         </div>
       ) : null}
+      <DepenseCsvPreviewModal
+        open={csvPreviewOpen}
+        onClose={() => setCsvPreviewOpen(false)}
+        rows={csvPreviewRows}
+        existingItems={itemsInRange}
+        onConfirm={executeCsvImport}
+        isPending={busy}
+      />
       <DepenseAddOffcanvas
         key={addDepenseNonce}
         open={addDepenseOpen}
@@ -484,14 +575,14 @@ export function DepensesPage() {
         }}
       />
       <div className="space-y-6 p-4 md:px-8 md:py-6">
-        <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
+        <div className="grid grid-cols-1 gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)] sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs text-stone-600">Du</label>
             <DateFrField
               valueYmd={after}
               onChangeYmd={setAfter}
               aria-label="Date de début (jj/mm/aaaa)"
-              inputClassName="min-w-[10.5rem] py-2"
+              inputClassName="w-full py-2"
             />
           </div>
           <div>
@@ -500,7 +591,7 @@ export function DepensesPage() {
               valueYmd={before}
               onChangeYmd={setBefore}
               aria-label="Date de fin (jj/mm/aaaa)"
-              inputClassName="min-w-[10.5rem] py-2"
+              inputClassName="w-full py-2"
             />
           </div>
           <div>
@@ -516,6 +607,15 @@ export function DepensesPage() {
                 </option>
               ))}
             </Select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-stone-600">Rechercher</label>
+            <Input
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Rechercher un produit…"
+              className="py-2"
+            />
           </div>
         </div>
         <p className="text-xs text-stone-500">
@@ -550,8 +650,8 @@ export function DepensesPage() {
             </p>
             <p className="mt-2 text-xs text-stone-600">
               Élargissez « Du » et « Au », choisissez « Toutes » pour la catégorie,
-              ou utilisez le raccourci ci-dessous si vous venez d’importer un
-              fichier (les lignes peuvent être sur d’autres dates).
+              ou utilisez le raccourci ci-dessous si vous venez d'importer un
+              fichier (les lignes peuvent être sur d'autres dates).
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               <Button
@@ -564,32 +664,26 @@ export function DepensesPage() {
                   setAfter(start)
                 }}
               >
-                Afficher un an jusqu’à aujourd’hui
+                Afficher un an jusqu'à aujourd'hui
               </Button>
             </div>
           </div>
         ) : (
-          <DepenseList
-            items={itemsInRange}
-            budgetItems={budgetItems}
-            disabled={busy}
-            onUpdate={(id, payload: DepenseEditPayload) => {
-              update.mutate({
-                id,
-                payload: {
-                  date: payload.date,
-                  produit: payload.produit,
-                  categorieCode: payload.categorieCode,
-                  quantite: payload.quantite,
-                  unite: payload.unite || null,
-                  prixUnitaire: payload.prixUnitaire,
-                  budgetItemId: payload.budgetItemId,
-                  note: null,
-                },
-              })
-            }}
-            onDelete={(id) => remove.mutate(id)}
-          />
+          <>
+            {isFiltered && (
+              <p className="text-sm text-stone-600">
+                {filteredItems.length} résultat{filteredItems.length !== 1 ? 's' : ''} sur {itemsInRange.length} dépense{itemsInRange.length !== 1 ? 's' : ''}
+              </p>
+            )}
+            <DepenseList
+              items={filteredItems}
+              budgetItems={budgetItems}
+              disabled={busy}
+              onUpdate={handleUpdate}
+              onDelete={handleDelete}
+              pendingDeleteIds={pendingDeleteIds}
+            />
+          </>
         )}
       </div>
     </>
