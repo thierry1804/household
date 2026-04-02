@@ -95,6 +95,19 @@ export interface MonthlyStats {
   pourcentage: number
 }
 
+/** Prévision vs réel pour un poste budgétaire (ligne du budget). */
+export interface BudgetPostStats {
+  budgetItemId: number
+  nom: string
+  /** Code catégorie (ex. pour filtrer les postes). */
+  categorieCode: string
+  categorieLibelle: string
+  prevision: number
+  reel: number
+  ecart: number
+  pourcentage: number
+}
+
 export interface DepenseListResponse {
   member: DepenseApi[]
   total: number

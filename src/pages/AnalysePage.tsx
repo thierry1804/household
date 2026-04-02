@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Header } from '../components/layout/Header'
+import { BudgetVsReelStats } from '../components/analyse/BudgetVsReelStats'
 import { MonthlyTable } from '../components/analyse/MonthlyTable'
 import { RecommendationCard } from '../components/analyse/RecommendationCard'
 import { Card, CardContent, CardHeader } from '../components/ui/Card'
@@ -10,7 +11,9 @@ import { fetchCategories } from '../services/categories.service'
 import { fetchDepensesForMonth } from '../services/stats.service'
 import {
   aggregateMonthlyStats,
+  aggregateMonthlyStatsByBudgetItem,
   buildRecommendations,
+  groupDepensesByBudgetItemId,
   topOverBudgetItems,
 } from '../services/aggregate'
 import { toAriary } from '../utils/formatters'
@@ -31,6 +34,15 @@ export function AnalysePage() {
         fetchCategories(),
       ])
       const monthly = aggregateMonthlyStats(budgetItems, depenses, categories)
+      const monthlyByBudgetItem = aggregateMonthlyStatsByBudgetItem(
+        budgetItems,
+        depenses,
+        categories,
+      )
+      const depensesByBudgetItemId = groupDepensesByBudgetItemId(
+        budgetItems,
+        depenses,
+      )
       const reco = buildRecommendations(budgetItems, depenses, categories)
       const topItems = topOverBudgetItems(budgetItems, depenses, 5)
       return {
@@ -38,6 +50,8 @@ export function AnalysePage() {
         depenses,
         categories,
         monthly,
+        monthlyByBudgetItem,
+        depensesByBudgetItemId,
         reco,
         topItems,
       }
@@ -102,6 +116,68 @@ export function AnalysePage() {
               ))}
             </Select>
           </div>
+          <div className="min-w-[min(100%,20rem)]">
+            <label className="mb-1 block text-xs text-stone-600">Catégorie</label>
+            <Select
+              value={drillCode}
+              onChange={(e) => setDrillCode(e.target.value)}
+            >
+              <option value="">—</option>
+              {data.categories.map((c) => (
+                <option key={c.id} value={c.code}>
+                  {c.libelle}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        <BudgetVsReelStats
+          monthlyByBudgetItem={data.monthlyByBudgetItem}
+          depensesByBudgetItemId={data.depensesByBudgetItemId}
+          selectedCategoryCode={drillCode || null}
+          selectedCategoryLabel={
+            drillCode ? labelForCategoryCode(drillCode, data.categories) : null
+          }
+          title={`Prévisionnel vs réalisé — ${String(month).padStart(2, '0')}/${year}`}
+        />
+
+        <div>
+          <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
+            Comparaison mensuelle
+          </h2>
+          <MonthlyTable rows={data.monthly} />
+        </div>
+
+        <div>
+          <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
+            Dépenses du mois (catégorie sélectionnée)
+          </h2>
+          {drill ? (
+            <Card>
+              <CardContent>
+                <p className="text-sm text-stone-600">
+                  {labelForCategoryCode(drillCode, data.categories)} — total{' '}
+                  <span className="font-medium text-[var(--color-ink)]">
+                    {toAriary(drill.sum)}
+                  </span>{' '}
+                  ({drill.rows.length} ligne(s))
+                </p>
+                <ul className="mt-3 max-h-64 space-y-1 overflow-auto text-sm">
+                  {drill.rows.map((r) => (
+                    <li key={r.id} className="flex justify-between gap-2">
+                      <span>{r.produit}</span>
+                      <span className="tabular-nums">{toAriary(r.montant)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          ) : (
+            <p className="text-sm text-stone-500">
+              Sélectionnez une catégorie dans les filtres en haut de page pour lister les dépenses.
+            </p>
+          )}
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -128,56 +204,6 @@ export function AnalysePage() {
               </ol>
             </CardContent>
           </Card>
-        </div>
-
-        <div>
-          <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
-            Comparaison mensuelle
-          </h2>
-          <MonthlyTable rows={data.monthly} />
-        </div>
-
-        <div>
-          <h2 className="mb-3 font-[family-name:var(--font-display)] text-lg text-[var(--color-ink)]">
-            Détail par catégorie
-          </h2>
-          <div className="mb-3 max-w-md">
-            <label className="mb-1 block text-xs text-stone-600">Catégorie</label>
-            <Select
-              value={drillCode}
-              onChange={(e) => setDrillCode(e.target.value)}
-            >
-              <option value="">Choisir…</option>
-              {data.categories.map((c) => (
-                <option key={c.id} value={c.code}>
-                  {c.libelle}
-                </option>
-              ))}
-            </Select>
-          </div>
-          {drill ? (
-            <Card>
-              <CardContent>
-                <p className="text-sm text-stone-600">
-                  {labelForCategoryCode(drillCode, data.categories)} — total{' '}
-                  <span className="font-medium text-[var(--color-ink)]">
-                    {toAriary(drill.sum)}
-                  </span>{' '}
-                  ({drill.rows.length} ligne(s))
-                </p>
-                <ul className="mt-3 max-h-64 space-y-1 overflow-auto text-sm">
-                  {drill.rows.map((r) => (
-                    <li key={r.id} className="flex justify-between gap-2">
-                      <span>{r.produit}</span>
-                      <span className="tabular-nums">{toAriary(r.montant)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          ) : (
-            <p className="text-sm text-stone-500">Sélectionnez une catégorie.</p>
-          )}
         </div>
       </div>
     </>

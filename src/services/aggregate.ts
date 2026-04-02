@@ -1,6 +1,7 @@
 import { endOfMonth, endOfToday, format, subDays } from 'date-fns'
 import type {
   BudgetItemApi,
+  BudgetPostStats,
   Categorie,
   DepenseApi,
   MonthlyStats,
@@ -64,6 +65,83 @@ function reelCategory(depenses: DepenseApi[], code: string): number {
   return depenses
     .filter((d) => d.categorieCode === code)
     .reduce((s, d) => s + d.montant, 0)
+}
+
+/** Réalisé du mois pour un poste : lien explicite `budgetItem`, sinon même produit que le nom du poste. */
+function reelForBudgetItem(b: BudgetItemApi, depenses: DepenseApi[]): number {
+  const id = b.id
+  const nameKey = b.nom.trim().toLowerCase()
+  return depenses.reduce((s, d) => {
+    if (d.budgetItem?.id === id) return s + d.montant
+    if (!d.budgetItem && d.produit.trim().toLowerCase() === nameKey) {
+      return s + d.montant
+    }
+    return s
+  }, 0)
+}
+
+export function aggregateMonthlyStatsByBudgetItem(
+  budgetItems: BudgetItemApi[],
+  depensesMonth: DepenseApi[],
+  categories: Categorie[],
+): BudgetPostStats[] {
+  const actifs = budgetItems.filter((b) => b.actif)
+  return actifs
+    .map((b) => {
+      const prevision = montantMensuelEffectif(b)
+      const reel = reelForBudgetItem(b, depensesMonth)
+      const ecart = reel - prevision
+      const pourcentage =
+        prevision > 0
+          ? Math.round((reel / prevision) * 1000) / 10
+          : reel > 0
+            ? 100
+            : 0
+      const categorieLibelle =
+        categories.find((c) => c.code === b.categorie.code)?.libelle ??
+        b.categorie.code
+      return {
+        budgetItemId: b.id,
+        nom: b.nom,
+        categorieCode: b.categorie.code,
+        categorieLibelle,
+        prevision,
+        reel,
+        ecart,
+        pourcentage,
+      }
+    })
+    .filter((row) => row.prevision > 0 || row.reel > 0)
+    .sort(
+      (a, b) =>
+        Math.max(b.prevision, b.reel) - Math.max(a.prevision, a.reel),
+    )
+}
+
+/** Dépenses du mois affectées à chaque poste (lien API ou correspondance nom produit). */
+export function groupDepensesByBudgetItemId(
+  budgetItems: BudgetItemApi[],
+  depensesMonth: DepenseApi[],
+): Record<number, DepenseApi[]> {
+  const actifs = budgetItems.filter((b) => b.actif)
+  const out: Record<number, DepenseApi[]> = {}
+  for (const b of actifs) {
+    out[b.id] = []
+  }
+  for (const d of depensesMonth) {
+    if (d.budgetItem?.id != null) {
+      const id = d.budgetItem.id
+      if (!out[id]) out[id] = []
+      out[id].push(d)
+      continue
+    }
+    const key = d.produit.trim().toLowerCase()
+    const bi = actifs.find((x) => x.nom.trim().toLowerCase() === key)
+    if (bi) {
+      out[bi.id].push(d)
+    }
+  }
+  return out
 }
 
 export function aggregateMonthlyStats(

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 
@@ -24,7 +24,13 @@ export function Layout() {
         onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
       />
       <main className="min-w-0 flex-1">
-        <Outlet />
+        <Suspense
+          fallback={
+            <div className="p-4 text-stone-600 md:px-8 md:py-6">Chargement…</div>
+          }
+        >
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )

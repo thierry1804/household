@@ -29,7 +29,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        'flex w-full flex-col border-b border-[var(--color-border)] bg-[var(--color-surface)] md:h-screen md:shrink-0 md:border-b-0 md:border-r md:transition-[width] md:duration-200 md:ease-out',
+        'sticky top-0 z-10 flex w-full flex-col border-b border-[var(--color-border)] bg-[var(--color-surface)] md:h-svh md:shrink-0 md:self-start md:border-b-0 md:border-r md:transition-[width] md:duration-200 md:ease-out',
         collapsed ? 'md:w-[4.25rem]' : 'md:w-56',
       )}
     >

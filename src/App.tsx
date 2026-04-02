@@ -1,10 +1,22 @@
+import { lazy } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Layout } from './components/layout/Layout'
-import { DashboardPage } from './pages/DashboardPage'
-import { BudgetPage } from './pages/BudgetPage'
-import { DepensesPage } from './pages/DepensesPage'
-import { AnalysePage } from './pages/AnalysePage'
-import { ReferentialsPage } from './pages/ReferentialsPage'
+
+const DashboardPage = lazy(() =>
+  import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
+)
+const BudgetPage = lazy(() =>
+  import('./pages/BudgetPage').then((m) => ({ default: m.BudgetPage })),
+)
+const DepensesPage = lazy(() =>
+  import('./pages/DepensesPage').then((m) => ({ default: m.DepensesPage })),
+)
+const ReferentialsPage = lazy(() =>
+  import('./pages/ReferentialsPage').then((m) => ({ default: m.ReferentialsPage })),
+)
+const AnalysePage = lazy(() =>
+  import('./pages/AnalysePage').then((m) => ({ default: m.AnalysePage })),
+)
 
 export default function App() {
   return (

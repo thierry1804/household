@@ -1,22 +1,19 @@
 import { useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { format, subDays, subMonths } from 'date-fns'
+import { format, subDays } from 'date-fns'
 import { Header } from '../components/layout/Header'
 import { DepenseAddOffcanvas } from '../components/depenses/DepenseAddOffcanvas'
 import { DepenseList } from '../components/depenses/DepenseList'
 import type { DepenseEditPayload } from '../components/depenses/DepenseForm'
 import { Button } from '../components/ui/Button'
-import { Input, Select } from '../components/ui/Input'
+import { DateFrField } from '../components/ui/DateFrField'
+import { Select } from '../components/ui/Input'
 import { useBudgetItems } from '../hooks/useBudgetItems'
 import { useCategories } from '../hooks/useCategories'
 import { useDepenseMutations } from '../hooks/useDepenses'
 import { fetchDepensesAllFiltered } from '../services/depenses.service'
-import {
-  depensesToCsv,
-  parseDepensesCsvWithMeta,
-  type SlashDateOrder,
-} from '../utils/csv'
+import { depensesToCsv, parseDepensesCsvWithMeta } from '../utils/csv'
 import { getApiErrorMessage, getViolations } from '../services/api'
 import { slugifyReferentialCode } from '../utils/slug'
 import type { Categorie } from '../types'
@@ -57,28 +54,12 @@ export function DepensesPage() {
   const { create, update, remove } = useDepenseMutations()
   const queryClient = useQueryClient()
 
-  /** Par défaut : 12 derniers mois (les imports CSV sont souvent sur une autre période que le mois en cours). */
-  const defaultAfter = useMemo(
-    () => format(subMonths(new Date(), 12), 'yyyy-MM-dd'),
-    [],
-  )
-  const defaultBefore = useMemo(() => format(new Date(), 'yyyy-MM-dd'), [])
+  /** Par défaut : « Du » et « Au » = date du jour. */
+  const defaultToday = useMemo(() => format(new Date(), 'yyyy-MM-dd'), [])
 
-  const [after, setAfter] = useState(defaultAfter)
-  const [before, setBefore] = useState(defaultBefore)
+  const [after, setAfter] = useState(defaultToday)
+  const [before, setBefore] = useState(defaultToday)
   const [categorieCode, setCategorieCode] = useState('')
-  /** 04/01/2026 = 4 jan. (FR) ou 1er avril (Excel US) — mémorisé pour les imports CSV. */
-  const [csvSlashDateOrder, setCsvSlashDateOrder] = useState<SlashDateOrder>(
-    () => {
-      try {
-        const v = localStorage.getItem('depensesCsvSlashDateOrder')
-        if (v === 'MDY' || v === 'DMY') return v
-      } catch {
-        /* ignore */
-      }
-      return 'DMY'
-    },
-  )
   const [csvImportProgress, setCsvImportProgress] = useState<{
     current: number
     total: number
@@ -151,6 +132,16 @@ export function DepensesPage() {
         'order[date]': 'desc',
       }),
   })
+
+  /** Garantit que la liste colle à la plage affichée (jj/mm/aaaa → AAAA-MM-JJ). */
+  const itemsInRange = useMemo(
+    () =>
+      items.filter(
+        (d) => d.date >= queryAfter && d.date <= queryBefore,
+      ),
+    [items, queryAfter, queryBefore],
+  )
+
   const busy =
     create.isPending ||
     update.isPending ||
@@ -161,7 +152,7 @@ export function DepensesPage() {
     const blob = new Blob(
       [
         depensesToCsv(
-          items.map((d) => ({
+          itemsInRange.map((d) => ({
             date: d.date,
             produit: d.produit,
             categorieCode: d.categorieCode,
@@ -178,7 +169,7 @@ export function DepensesPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `depenses-${after}-${before}.csv`
+    a.download = `depenses-${queryAfter}-${queryBefore}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -197,7 +188,8 @@ export function DepensesPage() {
     let delimLabel = 'virgule'
     try {
       const meta = parseDepensesCsvWithMeta(text, {
-        slashDateOrder: csvSlashDateOrder,
+        /** Toujours JJ/MM/AAAA pour les dates à barres obliques. */
+        slashDateOrder: 'DMY',
       })
       parsed = meta.rows
       dataLineCount = meta.dataLineCount
@@ -304,7 +296,7 @@ export function DepensesPage() {
         const sorted = [...importedDates].sort()
         const minD = sorted[0]
         const maxD = sorted[sorted.length - 1]
-        const widen = minD < after || maxD > before
+        const widen = minD < queryAfter || maxD > queryBefore
         if (widen) {
           flushSync(() => {
             setAfter((a) => (minD < a ? minD : a))
@@ -364,7 +356,7 @@ export function DepensesPage() {
             <Button
               type="button"
               variant="secondary"
-              disabled={busy || items.length === 0}
+              disabled={busy || itemsInRange.length === 0}
               onClick={handleExport}
             >
               <Download className="h-4 w-4" />
@@ -495,18 +487,20 @@ export function DepensesPage() {
         <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
           <div>
             <label className="mb-1 block text-xs text-stone-600">Du</label>
-            <Input
-              type="date"
-              value={after}
-              onChange={(e) => setAfter(e.target.value)}
+            <DateFrField
+              valueYmd={after}
+              onChangeYmd={setAfter}
+              aria-label="Date de début (jj/mm/aaaa)"
+              inputClassName="min-w-[10.5rem] py-2"
             />
           </div>
           <div>
             <label className="mb-1 block text-xs text-stone-600">Au</label>
-            <Input
-              type="date"
-              value={before}
-              onChange={(e) => setBefore(e.target.value)}
+            <DateFrField
+              valueYmd={before}
+              onChangeYmd={setBefore}
+              aria-label="Date de fin (jj/mm/aaaa)"
+              inputClassName="min-w-[10.5rem] py-2"
             />
           </div>
           <div>
@@ -523,36 +517,14 @@ export function DepensesPage() {
               ))}
             </Select>
           </div>
-          <div className="w-full min-w-[min(100%,18rem)] flex-1 basis-full sm:basis-auto sm:min-w-[260px]">
-            <label className="mb-1 block text-xs text-stone-600">
-              Interprétation des dates dans le CSV (ex. 04/01/2026)
-            </label>
-            <Select
-              value={csvSlashDateOrder}
-              onChange={(e) => {
-                const v = e.target.value as SlashDateOrder
-                setCsvSlashDateOrder(v)
-                try {
-                  localStorage.setItem('depensesCsvSlashDateOrder', v)
-                } catch {
-                  /* ignore */
-                }
-              }}
-            >
-              <option value="DMY">
-                JJ/MM/AAAA — 04/01/2026 = 4 janvier
-              </option>
-              <option value="MDY">
-                MM/JJ/AAAA (Excel US) — 04/01/2026 = 1er avril
-              </option>
-            </Select>
-          </div>
         </div>
         <p className="text-xs text-stone-500">
-          Seules les dépenses dont la date est entre « Du » et « Au » (inclus)
-          apparaissent. Choisissez ci-dessus comment lire les dates à barres
-          obliques dans le fichier ; les dates déjà au format AAAA-MM-JJ ne
-          changent pas. Élargissez la plage si la liste est vide.
+          « Du » et « Au » : saisie ou calendrier (icône), format{' '}
+          <span className="font-medium">jj/mm/aaaa</span>, premier et dernier jour{' '}
+          <span className="font-medium">inclus</span>. Ex. Du 02/04/2025 et Au
+          02/04/2026 incluent le <span className="font-medium">01/04/2026</span>. Pour
+          une seule journée, même date en Du et Au. Import CSV : JJ/MM/AAAA ;
+          AAAA-MM-JJ inchangé.
         </p>
 
         {datesInverted ? (
@@ -569,7 +541,7 @@ export function DepensesPage() {
           <p className="text-red-600">
             {error instanceof Error ? error.message : 'Erreur'}
           </p>
-        ) : items.length === 0 ? (
+        ) : itemsInRange.length === 0 ? (
           <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-10 text-center">
             <p className="text-sm text-stone-700">
               Aucune dépense sur la période affichée (
@@ -598,7 +570,7 @@ export function DepensesPage() {
           </div>
         ) : (
           <DepenseList
-            items={items}
+            items={itemsInRange}
             budgetItems={budgetItems}
             disabled={busy}
             onUpdate={(id, payload: DepenseEditPayload) => {
